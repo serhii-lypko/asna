@@ -11,6 +11,8 @@ impl Client {
         let tcp_stream = TcpStream::connect(addr).await?;
         let connection = Connection::new(tcp_stream);
 
+        let _ = tokio::time::sleep(tokio::time::Duration::from_secs(30)).await;
+
         Ok(Client { connection })
     }
 }
