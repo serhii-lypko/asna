@@ -1,7 +1,7 @@
 use std::future::Future;
 use std::sync::Arc;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{Semaphore, broadcast, mpsc};
+use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
 use tokio::time::Duration;
 
 use crate::connection::Connection;
@@ -164,15 +164,21 @@ impl ConnectionHandler {
                 }
             };
 
+            let (job_result_sender, job_result_receiver) = oneshot::channel();
+
             match message {
                 crate::message::Message::Ping => {}
                 crate::message::Message::Pong => {}
                 crate::message::Message::SubmitJob(submit_job) => {
                     self.bounded_queue_sender
-                        .send(QueuedJob::from_submit_job(submit_job))
+                        .send(QueuedJob::from_submit_job(submit_job, job_result_sender))
                         .await?;
                 }
             };
+
+            let job_result = job_result_receiver.await?;
+
+            // TODO -> write back JobResult to the connection
         }
     }
 }
