@@ -4,6 +4,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, broadcast, mpsc};
 use tokio::time::Duration;
 
+use crate::SubmitJob;
 use crate::connection::Connection;
 
 /// Orchestration boundary for the server lifecycle.
@@ -12,6 +13,8 @@ pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
     // It's a lifecycle orchestration across a graph of long-lived concurrent components.
     let (notify_shutdown, _) = broadcast::channel(1);
     let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel(1);
+
+    // TODO -> connection permit
 
     let mut listener = Listener {
         tcp_listener,
@@ -68,6 +71,7 @@ impl Listener {
         loop {
             let socket = self.accept().await?;
 
+            // Per-connection handler state.
             let mut conn_handler = ConnectionHandler {
                 connection: Connection::new(socket),
 
@@ -118,17 +122,35 @@ impl ConnectionHandler {
     async fn run(&mut self) -> crate::Result<()> {
         println!("run connection handler");
 
-        // while !self.shutdown_signal.is_shutdown() {
-        //     let _ = tokio::select! {
-        //         // TODO -> handle read,
-        //         _ = self.shutdown_signal.recv() => {
+        while !self.shutdown_signal.is_shutdown() {
+            let maybe_message = tokio::select! {
+                res = self.connection.read_message() => res?,
+                _ = self.shutdown_signal.recv() => {
+                    dbg!("receive shutdown 🟡");
+                    return Ok(());
+                }
+            };
 
-        //             // println!("shutdown rcv");
+            // let maybe_message = self.connection.read_message().await?;
 
-        //             return Ok(());
-        //         }
-        //     };
-        // }
+            // If `None` is returned from `read()` then the peer closed
+            // the socket. There is no further work to do and the task can be
+            // terminated.
+            let message = match maybe_message {
+                Some(cmd) => {
+                    // println!("jhey");
+
+                    cmd
+                }
+                None => {
+                    // println!("will drop connection handler?");
+
+                    return Ok(());
+                }
+            };
+
+            //
+        }
 
         Ok(())
     }

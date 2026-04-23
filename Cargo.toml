@@ -16,3 +16,4 @@ async-stream = "0.3.6"
 bytes = "1.11.1"
 tokio = { version = "1.52.1", features = ["full"] }
 tokio-stream = "0.1.18"
+uuid = {version = "1.23.1", features = ["v4"]}
