@@ -4,8 +4,9 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{Semaphore, broadcast, mpsc};
 use tokio::time::Duration;
 
-use crate::SubmitJob;
 use crate::connection::Connection;
+
+const MAX_CONNECTIONS: usize = 64;
 
 /// Orchestration boundary for the server lifecycle.
 pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
@@ -14,12 +15,13 @@ pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
     let (notify_shutdown, _) = broadcast::channel(1);
     let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel(1);
 
-    // TODO -> connection permit
+    let connection_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
 
     let mut listener = Listener {
         tcp_listener,
         notify_shutdown,
         shutdown_complete_tx,
+        connection_limit,
     };
 
     // NOTE: receiving external shutdown signal won't automatically drop spawned connections.
@@ -33,7 +35,7 @@ pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
     // -> propagate shutdown through your task graph.
     tokio::select! {
         // Listener - is an open-ended future.
-        res = listener.run() => {
+        _res = listener.run() => {
             //
         }
         _ = shutdown => {
@@ -62,13 +64,15 @@ struct Listener {
     tcp_listener: TcpListener,
     notify_shutdown: broadcast::Sender<()>,
     shutdown_complete_tx: mpsc::Sender<()>,
-    //
-    // TODO -> connection permit
+    connection_limit: Arc<Semaphore>,
 }
 
 impl Listener {
     async fn run(&mut self) -> crate::Result<()> {
         loop {
+            // Acquire before accepting so we stop taking new sockets once the
+            // server is already at its active-connection limit.
+            let connection_permit = self.connection_limit.clone().acquire_owned().await?;
             let socket = self.accept().await?;
 
             // Per-connection handler state.
@@ -78,7 +82,6 @@ impl Listener {
                 // Create shutdown receiver for each connection.
                 shutdown_signal: Shutdown::new(self.notify_shutdown.subscribe()),
 
-                //
                 _notify_shutdown: self.shutdown_complete_tx.clone(),
             };
 
@@ -87,7 +90,9 @@ impl Listener {
                     //
                 }
 
-                // TODO -> handle (drop) permit
+                // Move the permit into the task and drop it after completion.
+                // This returns the permit back to the semaphore.
+                drop(connection_permit);
             });
         }
     }
@@ -113,7 +118,6 @@ impl Listener {
 
 struct ConnectionHandler {
     connection: Connection,
-
     shutdown_signal: Shutdown,
     _notify_shutdown: mpsc::Sender<()>,
 }
@@ -135,7 +139,7 @@ impl ConnectionHandler {
             // If `None` is returned from `read()` then the peer closed
             // the socket. There is no further work to do and the task can be
             // terminated.
-            let message = match maybe_message {
+            let _message = match maybe_message {
                 Some(msg) => msg,
                 None => {
                     return Ok(());
@@ -164,5 +168,6 @@ impl Shutdown {
 
     async fn recv(&mut self) {
         let _ = self.shutdown_signal.recv().await;
+        self.is_shutdown = true;
     }
 }
