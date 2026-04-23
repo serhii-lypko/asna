@@ -5,7 +5,7 @@ use asna::{Result, SubmitJob};
 pub async fn main() -> Result<()> {
     let mut client = Client::connect("127.0.0.1:8888").await?;
 
-    let job1 = SubmitJob::new("awesome hello world".as_bytes().into());
+    let job1 = SubmitJob::new("hey".as_bytes().into());
     let _ = client.submit_job(job1).await;
 
     // let _ = client.ping().await;

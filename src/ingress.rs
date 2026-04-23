@@ -5,8 +5,11 @@ use tokio::sync::{Semaphore, broadcast, mpsc};
 use tokio::time::Duration;
 
 use crate::connection::Connection;
+use crate::thread_pool::{QueuedJob, ThreadPool};
 
+// TODO -> normally both that should be configurable and adjastable
 const MAX_CONNECTIONS: usize = 64;
+const BOUNDED_QUEUE_LIMIT: usize = 64;
 
 /// Orchestration boundary for the server lifecycle.
 pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
@@ -15,6 +18,14 @@ pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
     let (notify_shutdown, _) = broadcast::channel(1);
     let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel(1);
 
+    let (bounded_queue_sender, bounded_queue_receiver) = mpsc::channel(BOUNDED_QUEUE_LIMIT);
+
+    tokio::spawn(async move {
+        if let Err(_) = ThreadPool::run(bounded_queue_receiver).await {
+            //
+        }
+    });
+
     let connection_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
 
     let mut listener = Listener {
@@ -22,6 +33,7 @@ pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
         notify_shutdown,
         shutdown_complete_tx,
         connection_limit,
+        bounded_queue_sender,
     };
 
     // NOTE: receiving external shutdown signal won't automatically drop spawned connections.
@@ -65,6 +77,8 @@ struct Listener {
     notify_shutdown: broadcast::Sender<()>,
     shutdown_complete_tx: mpsc::Sender<()>,
     connection_limit: Arc<Semaphore>,
+
+    bounded_queue_sender: mpsc::Sender<QueuedJob>,
 }
 
 impl Listener {
@@ -83,6 +97,8 @@ impl Listener {
                 shutdown_signal: Shutdown::new(self.notify_shutdown.subscribe()),
 
                 _notify_shutdown: self.shutdown_complete_tx.clone(),
+
+                bounded_queue_sender: self.bounded_queue_sender.clone(),
             };
 
             tokio::spawn(async move {
@@ -120,6 +136,8 @@ struct ConnectionHandler {
     connection: Connection,
     shutdown_signal: Shutdown,
     _notify_shutdown: mpsc::Sender<()>,
+
+    bounded_queue_sender: mpsc::Sender<QueuedJob>,
 }
 
 impl ConnectionHandler {
@@ -131,7 +149,7 @@ impl ConnectionHandler {
             let maybe_message = tokio::select! {
                 res = self.connection.read_message() => res?,
                 _ = self.shutdown_signal.recv() => {
-                    dbg!("receive shutdown 🟡");
+                    // TODO -> logging
                     return Ok(());
                 }
             };
@@ -139,10 +157,20 @@ impl ConnectionHandler {
             // If `None` is returned from `read()` then the peer closed
             // the socket. There is no further work to do and the task can be
             // terminated.
-            let _message = match maybe_message {
+            let message = match maybe_message {
                 Some(msg) => msg,
                 None => {
                     return Ok(());
+                }
+            };
+
+            match message {
+                crate::message::Message::Ping => {}
+                crate::message::Message::Pong => {}
+                crate::message::Message::SubmitJob(submit_job) => {
+                    self.bounded_queue_sender
+                        .send(QueuedJob::from_submit_job(submit_job))
+                        .await?;
                 }
             };
         }
