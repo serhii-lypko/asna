@@ -36,8 +36,8 @@ impl Connection {
         }
     }
 
-    /// Will be used from clients
-    pub(crate) async fn write_message(&mut self, message: &Message) -> io::Result<()> {
+    /// Will be used from the clients
+    pub(crate) async fn write_message(&mut self, message: Message) -> io::Result<()> {
         self.write_stream.write_all(&message.encode()).await?;
         self.write_stream.flush().await
     }

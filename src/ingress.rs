@@ -122,7 +122,8 @@ impl ConnectionHandler {
     async fn run(&mut self) -> crate::Result<()> {
         println!("run connection handler");
 
-        while !self.shutdown_signal.is_shutdown() {
+        // FIXME -> normally should track shutdown: while !self.shutdown_signal.is_shutdown()
+        loop {
             let maybe_message = tokio::select! {
                 res = self.connection.read_message() => res?,
                 _ = self.shutdown_signal.recv() => {
@@ -140,11 +141,7 @@ impl ConnectionHandler {
                     return Ok(());
                 }
             };
-
-            //
         }
-
-        Ok(())
     }
 }
 

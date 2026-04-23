@@ -1,4 +1,4 @@
-use std::io::{self, Cursor};
+use std::io::{self};
 use tokio::net::{TcpStream, ToSocketAddrs};
 
 use crate::SubmitJob;
@@ -19,14 +19,14 @@ impl Client {
 
     pub async fn submit_job(&mut self, job: SubmitJob) -> io::Result<()> {
         let job_message = Message::SubmitJob(job);
-        let _ = self.connection.write_message(&job_message).await;
+        let _ = self.connection.write_message(job_message).await;
 
         Ok(())
     }
 
     pub async fn ping(&mut self) -> io::Result<()> {
         let ping_message = Message::Ping;
-        let _ = self.connection.write_message(&ping_message).await;
+        let _ = self.connection.write_message(ping_message).await;
 
         Ok(())
     }
