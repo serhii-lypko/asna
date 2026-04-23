@@ -51,8 +51,19 @@ impl Connection {
                 return Ok(Some(message));
             }
 
-            // Do actuall reading.
-            // If read nothing (0) - indicates end of stream.
+            // This one is critical.
+            // Pending on the client side does not mean read 0.
+            // It means write_stream.read_buf will sit and wait for client actions.
+            // So basically, it write_stream.read_buf() will return zero when connection
+            // is closed (or reset by peer). Otherwise it sits and waits for new bytes to come.
+            //
+            // So the idea is TCP is low-level stream protocol machinery. It does not provide
+            // explicit application-level states. It gives byte-stream behavior plus connection
+            // lifecycle semantics. Closure is observed indirectly through EOF.
+            //
+            // bytes read > 0 -> data arrived
+            // future pending -> no data yet, connection still open
+            // bytes read == 0 -> peer closed / EOF
             if self.write_stream.read_buf(&mut self.read_buff).await? == 0 {
                 if self.read_buff.is_empty() {
                     return Ok(None);

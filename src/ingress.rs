@@ -131,20 +131,12 @@ impl ConnectionHandler {
                 }
             };
 
-            // let maybe_message = self.connection.read_message().await?;
-
             // If `None` is returned from `read()` then the peer closed
             // the socket. There is no further work to do and the task can be
             // terminated.
             let message = match maybe_message {
-                Some(msg) => {
-                    dbg!(&msg);
-
-                    msg
-                }
+                Some(msg) => msg,
                 None => {
-                    // println!("will drop connection handler?");
-
                     return Ok(());
                 }
             };

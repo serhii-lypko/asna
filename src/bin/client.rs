@@ -9,9 +9,9 @@ pub async fn main() -> Result<()> {
     // let _ = client.submit_job(job1).await;
 
     let _ = client.ping().await;
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
     let _ = client.ping().await;
-    // let _ = client.ping().await;
+    tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
+    let _ = client.ping().await;
 
     // tokio::time::sleep(tokio::time::Duration::from_secs(15)).await;
 
