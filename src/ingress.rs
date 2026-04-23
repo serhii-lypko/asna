@@ -137,10 +137,10 @@ impl ConnectionHandler {
             // the socket. There is no further work to do and the task can be
             // terminated.
             let message = match maybe_message {
-                Some(cmd) => {
-                    // println!("jhey");
+                Some(msg) => {
+                    dbg!(&msg);
 
-                    cmd
+                    msg
                 }
                 None => {
                     // println!("will drop connection handler?");

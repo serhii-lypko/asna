@@ -26,6 +26,7 @@ impl Client {
 
     pub async fn ping(&mut self) -> io::Result<()> {
         let ping_message = Message::Ping;
+        let _ = self.connection.write_message(&ping_message).await;
 
         Ok(())
     }

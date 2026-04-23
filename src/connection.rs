@@ -48,10 +48,11 @@ impl Connection {
             // Try parse message first. If no enough data in buffer - try grab some more bytes
             // from tcp stream and try again.
             if let Some(message) = self.try_parse()? {
-                //
+                return Ok(Some(message));
             }
 
-            // 0 indicates end of stream
+            // Do actuall reading.
+            // If read nothing (0) - indicates end of stream.
             if self.write_stream.read_buf(&mut self.read_buff).await? == 0 {
                 if self.read_buff.is_empty() {
                     return Ok(None);
@@ -62,17 +63,18 @@ impl Connection {
         }
     }
 
-    fn try_parse(&self) -> crate::Result<Option<Message>> {
+    fn try_parse(&mut self) -> crate::Result<Option<Message>> {
         use crate::message::Error::Incomplete;
 
         let mut buf = Cursor::new(&self.read_buff[..]);
 
         match Message::parse(&mut buf) {
-            Ok(_) => {
-                // dbg!(buf.position());
+            Ok(msg) => {
+                // Parsing implictly advanced the cursor position of the buffer
+                let parsed_len = buf.position() as usize;
+                self.read_buff.advance(parsed_len);
 
-                // FIXME
-                Ok(None)
+                Ok(Some(msg))
             }
 
             // There is not enough data present in the read buffer to parse a single message.

@@ -2,10 +2,12 @@ use bytes::{Buf, Bytes};
 use std::io::Cursor;
 use uuid::Uuid;
 
+#[derive(Debug)]
 pub enum SubmitJobKind {
     Hashing,
 }
 
+#[derive(Debug)]
 pub struct SubmitJob {
     id: Uuid,
     kind: SubmitJobKind,
@@ -24,8 +26,11 @@ impl SubmitJob {
     }
 }
 
+#[derive(Debug)]
 pub(crate) enum Message {
     Ping,
+    Pong,
+
     SubmitJob(SubmitJob),
 }
 
@@ -33,37 +38,63 @@ impl Message {
     /// Length-prefixed encoding.
     /// [message-kind:1byte][payload-len:4bytes][payload:Nbytes]
     pub(crate) fn encode(&self) -> Vec<u8> {
-        let msg_kind = &self.encode_message_kind();
+        let msg_kind = &self.encode_msg_kind();
 
-        let payload = "hello".as_bytes();
-        let payload_len = payload.len() as u32;
+        match self {
+            Message::Ping => msg_kind.into(),
+            Message::Pong => msg_kind.into(),
+            Message::SubmitJob(submit_job) => {
+                let payload = "hello".as_bytes();
+                let payload_len = payload.len() as u32;
 
-        // Converting payload_len into its big-endian byte representation.
-        let payload_len_bytes: &[u8; 4] = &payload_len.to_be_bytes();
+                // Converting payload_len into its big-endian byte representation.
+                let payload_len_bytes: &[u8; 4] = &payload_len.to_be_bytes();
 
-        [&msg_kind[..], &payload_len_bytes[..], payload].concat()
+                [&msg_kind[..], &payload_len_bytes[..], payload].concat()
+            }
+        }
     }
 
     pub(crate) fn parse(src: &mut Cursor<&[u8]>) -> Result<Message, Error> {
-        // peek 4-byte length prefix
-        // if not enough bytes for prefix, return incomplete
-        // if not enough bytes for whole frame, return incomplete
-        // otherwise decode one message and consume bytes
+        let msg_kind = Message::decode_msg_kind(get_u8(src)?)?;
 
-        let payload_len = get_u32(src)?;
-        dbg!(payload_len);
+        match msg_kind {
+            Message::Ping => Ok(Message::Ping),
+            Message::Pong => Ok(Message::Pong),
+            Message::SubmitJob(submit_job) => {
+                let payload_len = get_u32(src)?;
 
-        todo!()
+                todo!()
+            }
+        }
     }
 
-    fn encode_message_kind(&self) -> [u8; 1] {
+    fn encode_msg_kind(&self) -> [u8; 1] {
         let descriptor: u8 = match self {
             Message::Ping => 0x0,
-            Message::SubmitJob(_) => 0x01,
+            Message::Pong => 0x1,
+            Message::SubmitJob(_) => 0x02,
         };
 
         descriptor.to_be_bytes()
     }
+
+    fn decode_msg_kind(descriptor: u8) -> Result<Self, Error> {
+        match descriptor {
+            0x0 => Ok(Message::Ping),
+            0x1 => Ok(Message::Pong),
+            _ => unimplemented!(),
+        }
+    }
+}
+
+/// Consumes exactly 1 byte from the cursor and returns it as u8.
+fn get_u8(src: &mut Cursor<&[u8]>) -> Result<u8, Error> {
+    if !src.has_remaining() {
+        return Err(Error::Incomplete);
+    }
+
+    Ok(src.get_u8())
 }
 
 /// Consumes exactly 4 bytes from the cursor and returns it as u32.
