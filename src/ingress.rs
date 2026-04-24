@@ -20,11 +20,10 @@ pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
 
     let (bounded_queue_sender, bounded_queue_receiver) = mpsc::channel(BOUNDED_QUEUE_LIMIT);
 
-    tokio::spawn(async move {
-        if let Err(_) = ThreadPool::run(bounded_queue_receiver).await {
-            //
-        }
-    });
+    // Spawning thread pool
+    if let Err(err) = ThreadPool::start(bounded_queue_receiver).await {
+        unimplemented!()
+    }
 
     let connection_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
 
