@@ -1,64 +1,113 @@
-use crate::message::SubmitJob;
+use std::collections::VecDeque;
+use std::sync::{Arc, Condvar, Mutex};
 use tokio::sync::{mpsc, oneshot};
+
+use crate::message::{ResultJob, SubmitJob};
 
 // TODO -> shutdown semantics: stop accepting new jobs, decide whether queued jobs are
 // drained or canceled, and wait for active workers to finish up to some policy.
 
-static WORKER_COUNT: usize = 4;
-
-#[derive(Debug)]
-pub(crate) struct JobResult {
-    foo: String,
-}
+// static WORKER_COUNT: usize = 4;
+static WORKER_COUNT: usize = 1;
 
 #[derive(Debug)]
 pub(crate) struct QueuedJob {
     job: SubmitJob,
-    reply_tx: oneshot::Sender<JobResult>,
+    reply_tx: oneshot::Sender<ResultJob>,
 }
 
 impl QueuedJob {
-    pub(crate) fn from_submit_job(job: SubmitJob, reply_tx: oneshot::Sender<JobResult>) -> Self {
+    pub(crate) fn from_submit_job(job: SubmitJob, reply_tx: oneshot::Sender<ResultJob>) -> Self {
         QueuedJob { job, reply_tx }
     }
 }
 
+struct SharedState {
+    queue: Mutex<VecDeque<QueuedJob>>,
+
+    // The condvar lets threads sleep until someone will trigger condition re-check.
+    // Notifications are hints to wake up and inspect the condition again. It is like one-shot a wakeup event.
+    job_available: Condvar,
+}
+
 /// A fixed set of long-lived OS threads created once at startup.
 pub(crate) struct ThreadPool {
-    receiver: mpsc::Receiver<QueuedJob>,
+    // Having ownerhsip over spawned threads via JoinHandle
     workers: Vec<std::thread::JoinHandle<()>>,
+
+    state: Arc<SharedState>,
 }
 
 impl ThreadPool {
-    pub(crate) async fn start(receiver: mpsc::Receiver<QueuedJob>) -> Result<(), WorkerPoolErr> {
-        let mut pool = ThreadPool::new(receiver)?;
+    // TODO -> handle gracefull shutdown
+    pub(crate) async fn boot(
+        mut receiver: mpsc::Receiver<QueuedJob>,
+    ) -> Result<ThreadPool, WorkerPoolErr> {
+        let pool = ThreadPool::new()?;
 
-        while let Some(job) = pool.receiver.recv().await {
-            // tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;
-            // let _ = job.reply_tx.send(JobResult { foo: "okay".into() });
-        }
+        // Bridge task
+        tokio::spawn({
+            let state = pool.state.clone();
 
-        Ok(())
+            async move {
+                while let Some(job) = receiver.recv().await {
+                    state.queue.lock().unwrap().push_back(job);
+                    state.job_available.notify_all();
+                }
+            }
+        });
+
+        Ok(pool)
     }
 
-    /*
-        TODO
-
-        One nuance: the part you pass to workers must be shared thread-safe state,
-        usually behind Arc and synchronization primitives. The handles themselves
-        are not shared with workers; they stay owned by the pool object.
-        The workers just run. The pool keeps the handles as the management
-        side of the lifecycle.
-    */
-
-    fn new(receiver: mpsc::Receiver<QueuedJob>) -> Result<Self, WorkerPoolErr> {
+    fn new() -> Result<Self, WorkerPoolErr> {
         let mut workers = Vec::with_capacity(WORKER_COUNT);
 
-        for i in 0..WORKER_COUNT {
-            // std::thread::spawn(...)
+        let state = Arc::new(SharedState {
+            queue: Mutex::new(VecDeque::new()),
+            job_available: Condvar::new(),
+        });
+
+        // After boot spawns this OS thread, it immediately enters a long-lived pull loop.
+        // The worker blocks on the shared queue until work is available, then grabs the next
+        // queued job itself, releases the lock, and processes that job outside the critical section.
+        //
+        // Create an OS thread now, and it give that new thread a function to run later or immediately,
+        // depending on scheduling.
+        //
+        // Cost of idle worker threads is mostly memory and some scheduler bookkeeping, but no CPU time.
+        for _ in 0..WORKER_COUNT {
+            // TODO -> use thread builder?
+            // https://mara.nl/atomics/basics.html#thread-builder
+            // The main practical reason is naming. Giving workers names like asna-worker-0, asna-worker-1,
+            // and so on is useful for logs, panics, debugging, and profilers. Once have multiple long-lived
+            // worker threads, names become worth it immediately.
+
+            let task = std::thread::spawn({
+                let state = state.clone();
+
+                move || loop {
+                    let mut queue = state.queue.lock().unwrap();
+
+                    let qjob = loop {
+                        if let Some(job) = queue.pop_front() {
+                            break job;
+                        }
+
+                        queue = state.job_available.wait(queue).unwrap();
+                    };
+
+                    drop(queue);
+
+                    let job_result = qjob.job.eval();
+                    let _ = qjob.reply_tx.send(job_result);
+                }
+            });
+
+            workers.push(task);
         }
 
-        todo!()
+        Ok(ThreadPool { workers, state })
     }
 }
 

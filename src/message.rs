@@ -8,6 +8,12 @@ use uuid::Uuid;
 // }
 
 #[derive(Debug)]
+pub struct ResultJob {
+    submit_job_id: Uuid,
+    result: Vec<u8>,
+}
+
+#[derive(Debug)]
 pub struct SubmitJob {
     id: Uuid,
 
@@ -25,6 +31,14 @@ impl SubmitJob {
             payload,
         }
     }
+
+    // TODO -> should define eval semantics based on job kind
+    // TODO -> should return Result
+    pub(crate) fn eval(&self) -> ResultJob {
+        dbg!("processing job");
+
+        todo!()
+    }
 }
 
 // Wire-level tag enum
@@ -32,6 +46,7 @@ enum MessageKind {
     Ping,
     Pong,
     SubmitJob,
+    ResultJob,
 }
 
 #[derive(Debug)]
@@ -40,6 +55,7 @@ pub(crate) enum Message {
     Pong,
 
     SubmitJob(SubmitJob),
+    ResultJob(ResultJob),
 }
 
 impl Message {
@@ -65,6 +81,7 @@ impl Message {
 
                 [&msg_kind[..], &payload_len_bytes[..], &payload].concat()
             }
+            Message::ResultJob(result_job) => unimplemented!(),
         }
     }
 
@@ -83,6 +100,7 @@ impl Message {
                 let job = SubmitJob::new(payload.into());
                 Ok(Message::SubmitJob(job))
             }
+            MessageKind::ResultJob => unimplemented!(),
         }
     }
 
@@ -91,6 +109,7 @@ impl Message {
             Message::Ping => 0x0,
             Message::Pong => 0x1,
             Message::SubmitJob(_) => 0x02,
+            Message::ResultJob(_) => 0x03,
         };
 
         descriptor.to_be_bytes()

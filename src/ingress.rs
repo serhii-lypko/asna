@@ -20,8 +20,9 @@ pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
 
     let (bounded_queue_sender, bounded_queue_receiver) = mpsc::channel(BOUNDED_QUEUE_LIMIT);
 
+    // TODO -> should also handle gracefull shutdown: stop workers, etc.
     // Spawning thread pool
-    if let Err(err) = ThreadPool::start(bounded_queue_receiver).await {
+    if let Err(err) = ThreadPool::boot(bounded_queue_receiver).await {
         unimplemented!()
     }
 
@@ -173,6 +174,7 @@ impl ConnectionHandler {
                         .send(QueuedJob::from_submit_job(submit_job, job_result_sender))
                         .await?;
                 }
+                crate::message::Message::ResultJob(result_job) => unimplemented!(),
             };
 
             let job_result = job_result_receiver.await?;
