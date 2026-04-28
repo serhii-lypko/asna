@@ -5,7 +5,7 @@ use tokio::sync::{Semaphore, broadcast, mpsc, oneshot};
 use tokio::time::Duration;
 
 use crate::connection::Connection;
-use crate::thread_pool::{QueuedJob, ThreadPool};
+use crate::worker_pool::{QueuedJob, WorkerPool};
 
 // TODO -> normally both that should be configurable and adjastable
 const MAX_CONNECTIONS: usize = 64;
@@ -22,10 +22,9 @@ pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
 
     let (bounded_queue_sender, bounded_queue_receiver) = mpsc::channel(BOUNDED_QUEUE_LIMIT);
 
+    // TODO -> handle result
     // Spawning thread pool
-    // if let Err(err) = ThreadPool::boot(bounded_queue_receiver).await {
-    //     unimplemented!()
-    // }
+    let worker_pool = WorkerPool::boot(notify_shutdown.subscribe(), bounded_queue_receiver).await;
 
     let connection_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
 
@@ -69,6 +68,8 @@ pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
 
     // Drop final `Sender` so the `Receiver` below can complete.
     drop(shutdown_complete_tx);
+
+    // TODO -> wait for worker_pool done
 
     // Waiting for all shutdown completion.
     let _ = shutdown_complete_rx.recv().await;

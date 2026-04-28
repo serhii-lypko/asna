@@ -31,32 +31,54 @@ struct SharedState {
 }
 
 /// A fixed set of long-lived OS threads created once at startup.
-pub(crate) struct ThreadPool {
-    // Having ownerhsip over spawned threads via JoinHandle
+pub(crate) struct WorkerPool {
+    // Having ownerhsip and lifecycle controll over spawned threads via JoinHandle-s.
     workers: Vec<std::thread::JoinHandle<()>>,
     state: Arc<SharedState>,
-
-    notify_shutdown: broadcast::Sender<()>,
-    shutdown_complete_tx: mpsc::Sender<()>,
+    //
+    // notify_shutdown: broadcast::Sender<()>,
+    // shutdown_complete_tx: mpsc::Sender<()>,
 }
 
-impl ThreadPool {
-    // TODO -> handle gracefull shutdown
+/*
+    TODO -> worker pool shutdown
+
+    For them, shutdown usually means a shared flag in the blocking state, protected by the same mutex,
+    plus a Condvar wakeup. The worker loop then becomes: wait while queue empty and shutdown is false;
+    if queue has job, process it; if queue empty and shutdown is true, exit thread.
+*/
+
+impl WorkerPool {
+    /// boot itself - is a short-lived routine, which runs to completion and initiates background work
     pub(crate) async fn boot(
+        mut shutdown_rx: broadcast::Receiver<()>,
         mut receiver: mpsc::Receiver<QueuedJob>,
-    ) -> Result<ThreadPool, WorkerPoolErr> {
-        let pool = ThreadPool::new()?;
+    ) -> Result<WorkerPool, WorkerPoolErr> {
+        let pool = WorkerPool::new()?;
 
         // Bridge task
         tokio::spawn({
             let state = pool.state.clone();
 
             async move {
-                while let Some(job) = receiver.recv().await {
-                    state.queue.lock().unwrap().push_back(job);
-
-                    // One pushed job only needs one worker to wake
-                    state.job_available.notify_one();
+                // Keep forwarding jobs until shutdown
+                loop {
+                    tokio::select! {
+                        maybe_job = receiver.recv() => {
+                            match maybe_job {
+                                Some(job) => {
+                                    state.queue.lock().unwrap().push_back(job);
+                                    state.job_available.notify_one();
+                                }
+                                None => {
+                                    break;
+                                }
+                            }
+                        }
+                        _ = shutdown_rx.recv() => {
+                            break;
+                        }
+                    }
                 }
             }
         });
@@ -114,15 +136,13 @@ impl ThreadPool {
             workers.push(task);
         }
 
-        // Ok(ThreadPool { workers, state })
-
-        todo!()
+        Ok(WorkerPool { workers, state })
     }
 }
 
 #[derive(Debug)]
 pub enum WorkerPoolErr {
-    ThreadPoolStartError,
+    WorkerPoolStartError,
 
     /// Invalid message encoding
     Other(crate::Error),

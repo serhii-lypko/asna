@@ -3,7 +3,7 @@ pub mod connection;
 pub mod dispatcher;
 pub mod ingress;
 pub mod message;
-pub mod thread_pool;
+pub mod worker_pool;
 
 pub use message::SubmitJob;
 
