@@ -35,9 +35,13 @@ impl SubmitJob {
     // TODO -> should define eval semantics based on job kind
     // TODO -> should return Result
     pub(crate) fn eval(&self) -> ResultJob {
-        dbg!("processing job");
+        // FIXME
+        std::thread::sleep(std::time::Duration::from_secs(5));
 
-        todo!()
+        ResultJob {
+            submit_job_id: self.id,
+            result: "ready".as_bytes().into(),
+        }
     }
 }
 

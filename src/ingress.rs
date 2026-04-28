@@ -179,6 +179,8 @@ impl ConnectionHandler {
 
             let job_result = job_result_receiver.await?;
 
+            dbg!(job_result);
+
             // TODO -> write back JobResult to the connection
         }
     }

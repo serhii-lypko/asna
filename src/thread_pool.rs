@@ -7,8 +7,8 @@ use crate::message::{ResultJob, SubmitJob};
 // TODO -> shutdown semantics: stop accepting new jobs, decide whether queued jobs are
 // drained or canceled, and wait for active workers to finish up to some policy.
 
-// static WORKER_COUNT: usize = 4;
-static WORKER_COUNT: usize = 1;
+static WORKER_COUNT: usize = 4;
+// static WORKER_COUNT: usize = 1;
 
 #[derive(Debug)]
 pub(crate) struct QueuedJob {
@@ -52,7 +52,9 @@ impl ThreadPool {
             async move {
                 while let Some(job) = receiver.recv().await {
                     state.queue.lock().unwrap().push_back(job);
-                    state.job_available.notify_all();
+
+                    // One pushed job only needs one worker to wake
+                    state.job_available.notify_one();
                 }
             }
         });
@@ -83,6 +85,7 @@ impl ThreadPool {
             // and so on is useful for logs, panics, debugging, and profilers. Once have multiple long-lived
             // worker threads, names become worth it immediately.
 
+            // Design reference: https://mara.nl/atomics/basics.html#condvar
             let task = std::thread::spawn({
                 let state = state.clone();
 
@@ -101,6 +104,8 @@ impl ThreadPool {
 
                     let job_result = qjob.job.eval();
                     let _ = qjob.reply_tx.send(job_result);
+
+                    dbg!("processed job");
                 }
             });
 
