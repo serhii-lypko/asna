@@ -15,16 +15,17 @@ const BOUNDED_QUEUE_LIMIT: usize = 64;
 pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
     // Both channels are used for lifecycle signals, not data queue.
     // It's a lifecycle orchestration across a graph of long-lived concurrent components.
+    // So basically, shutdown signalling between parties happens via implicit drop semantics,
+    // when droping one part of the channel signals to another.
     let (notify_shutdown, _) = broadcast::channel(1);
     let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel(1);
 
     let (bounded_queue_sender, bounded_queue_receiver) = mpsc::channel(BOUNDED_QUEUE_LIMIT);
 
-    // TODO -> should also handle gracefull shutdown: stop workers, etc.
     // Spawning thread pool
-    if let Err(err) = ThreadPool::boot(bounded_queue_receiver).await {
-        unimplemented!()
-    }
+    // if let Err(err) = ThreadPool::boot(bounded_queue_receiver).await {
+    //     unimplemented!()
+    // }
 
     let connection_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
 
@@ -61,8 +62,9 @@ pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
         ..
     } = listener;
 
-    // When `notify_shutdown` is dropped, all tasks which have `subscribe`d will
-    // receive the shutdown signal and can exit.
+    // When `notify_shutdown` is dropped, all tasks which have `subscribe()`d will
+    // receive the shutdown signal and can exit. Tokio broadcast channel, receiver-side recv().await
+    // completes not only when a message is sent, but also when the channel is closed.
     drop(notify_shutdown);
 
     // Drop final `Sender` so the `Receiver` below can complete.
@@ -74,9 +76,10 @@ pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
 
 struct Listener {
     tcp_listener: TcpListener,
+    connection_limit: Arc<Semaphore>,
+
     notify_shutdown: broadcast::Sender<()>,
     shutdown_complete_tx: mpsc::Sender<()>,
-    connection_limit: Arc<Semaphore>,
 
     bounded_queue_sender: mpsc::Sender<QueuedJob>,
 }
@@ -94,8 +97,7 @@ impl Listener {
                 connection: Connection::new(socket),
 
                 // Create shutdown receiver for each connection.
-                shutdown_signal: Shutdown::new(self.notify_shutdown.subscribe()),
-
+                shutdown_signal: self.notify_shutdown.subscribe(),
                 _notify_shutdown: self.shutdown_complete_tx.clone(),
 
                 bounded_queue_sender: self.bounded_queue_sender.clone(),
@@ -134,7 +136,11 @@ impl Listener {
 
 struct ConnectionHandler {
     connection: Connection,
-    shutdown_signal: Shutdown,
+    shutdown_signal: broadcast::Receiver<()>,
+
+    /// Not used directly. Instead, when `Handler` is dropped...?
+    /// So when the connection handler will be dropped, the channel gets closed, which will
+    /// implicitly notify receiving part (shutdown_complete_rx).
     _notify_shutdown: mpsc::Sender<()>,
 
     bounded_queue_sender: mpsc::Sender<QueuedJob>,
@@ -144,8 +150,8 @@ impl ConnectionHandler {
     async fn run(&mut self) -> crate::Result<()> {
         println!("run connection handler");
 
-        // FIXME -> normally should track shutdown: while !self.shutdown_signal.is_shutdown()
         loop {
+            // Shutdown signal will cancel in-progress task execution
             let maybe_message = tokio::select! {
                 res = self.connection.read_message() => res?,
                 _ = self.shutdown_signal.recv() => {
@@ -174,37 +180,15 @@ impl ConnectionHandler {
                         .send(QueuedJob::from_submit_job(submit_job, job_result_sender))
                         .await?;
                 }
-                crate::message::Message::ResultJob(result_job) => unimplemented!(),
+
+                // Client should not send ResultJob
+                crate::message::Message::ResultJob(_) => unreachable!(),
             };
 
-            let job_result = job_result_receiver.await?;
+            // let result_job = job_result_receiver.await?;
+            // dbg!(result_job);
 
-            dbg!(job_result);
-
-            // TODO -> write back JobResult to the connection
+            // TODO -> write back ResultJob to the connection
         }
-    }
-}
-
-struct Shutdown {
-    shutdown_signal: broadcast::Receiver<()>,
-    is_shutdown: bool,
-}
-
-impl Shutdown {
-    fn new(shutdown_signal: broadcast::Receiver<()>) -> Shutdown {
-        Shutdown {
-            shutdown_signal,
-            is_shutdown: false,
-        }
-    }
-
-    fn is_shutdown(&self) -> bool {
-        self.is_shutdown
-    }
-
-    async fn recv(&mut self) {
-        let _ = self.shutdown_signal.recv().await;
-        self.is_shutdown = true;
     }
 }

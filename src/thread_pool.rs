@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{broadcast, mpsc, oneshot};
 
 use crate::message::{ResultJob, SubmitJob};
 
@@ -34,8 +34,10 @@ struct SharedState {
 pub(crate) struct ThreadPool {
     // Having ownerhsip over spawned threads via JoinHandle
     workers: Vec<std::thread::JoinHandle<()>>,
-
     state: Arc<SharedState>,
+
+    notify_shutdown: broadcast::Sender<()>,
+    shutdown_complete_tx: mpsc::Sender<()>,
 }
 
 impl ThreadPool {
@@ -112,7 +114,9 @@ impl ThreadPool {
             workers.push(task);
         }
 
-        Ok(ThreadPool { workers, state })
+        // Ok(ThreadPool { workers, state })
+
+        todo!()
     }
 }
 
