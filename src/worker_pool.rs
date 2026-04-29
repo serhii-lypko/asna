@@ -1,6 +1,7 @@
 use std::collections::VecDeque;
 use std::sync::{Arc, Condvar, Mutex};
 use tokio::sync::{broadcast, mpsc, oneshot};
+use tokio::task::JoinHandle as TokioJoinHandle;
 
 use crate::message::{ResultJob, SubmitJob};
 
@@ -24,10 +25,23 @@ impl QueuedJob {
 
 struct SharedState {
     queue: Mutex<VecDeque<QueuedJob>>,
+    is_shutdown: Mutex<bool>,
 
     // The condvar lets threads sleep until someone will trigger condition re-check.
     // Notifications are hints to wake up and inspect the condition again. It is like one-shot a wakeup event.
     job_available: Condvar,
+}
+
+impl SharedState {
+    fn begin_shutdown(&self) {
+        let mut is_shutdown = self.is_shutdown.lock().unwrap();
+        *is_shutdown = true;
+        drop(is_shutdown);
+
+        // Wake all sleeping workers so they can re-check the shutdown flag and exit
+        // instead of remaining blocked on the condvar forever.
+        self.job_available.notify_all();
+    }
 }
 
 /// A fixed set of long-lived OS threads created once at startup.
@@ -35,62 +49,16 @@ pub(crate) struct WorkerPool {
     // Having ownerhsip and lifecycle controll over spawned threads via JoinHandle-s.
     workers: Vec<std::thread::JoinHandle<()>>,
     state: Arc<SharedState>,
-    //
-    // notify_shutdown: broadcast::Sender<()>,
-    // shutdown_complete_tx: mpsc::Sender<()>,
+    bridge_task: Option<TokioJoinHandle<()>>,
 }
 
-/*
-    TODO -> worker pool shutdown
-
-    For them, shutdown usually means a shared flag in the blocking state, protected by the same mutex,
-    plus a Condvar wakeup. The worker loop then becomes: wait while queue empty and shutdown is false;
-    if queue has job, process it; if queue empty and shutdown is true, exit thread.
-*/
-
 impl WorkerPool {
-    /// boot itself - is a short-lived routine, which runs to completion and initiates background work
-    pub(crate) async fn boot(
-        mut shutdown_rx: broadcast::Receiver<()>,
-        mut receiver: mpsc::Receiver<QueuedJob>,
-    ) -> Result<WorkerPool, WorkerPoolErr> {
-        let pool = WorkerPool::new()?;
-
-        // Bridge task
-        tokio::spawn({
-            let state = pool.state.clone();
-
-            async move {
-                // Keep forwarding jobs until shutdown
-                loop {
-                    tokio::select! {
-                        maybe_job = receiver.recv() => {
-                            match maybe_job {
-                                Some(job) => {
-                                    state.queue.lock().unwrap().push_back(job);
-                                    state.job_available.notify_one();
-                                }
-                                None => {
-                                    break;
-                                }
-                            }
-                        }
-                        _ = shutdown_rx.recv() => {
-                            break;
-                        }
-                    }
-                }
-            }
-        });
-
-        Ok(pool)
-    }
-
     fn new() -> Result<Self, WorkerPoolErr> {
         let mut workers = Vec::with_capacity(WORKER_COUNT);
 
         let state = Arc::new(SharedState {
             queue: Mutex::new(VecDeque::new()),
+            is_shutdown: Mutex::new(false),
             job_available: Condvar::new(),
         });
 
@@ -121,6 +89,10 @@ impl WorkerPool {
                             break job;
                         }
 
+                        if *state.is_shutdown.lock().unwrap() {
+                            return;
+                        }
+
                         queue = state.job_available.wait(queue).unwrap();
                     };
 
@@ -136,7 +108,70 @@ impl WorkerPool {
             workers.push(task);
         }
 
-        Ok(WorkerPool { workers, state })
+        Ok(WorkerPool {
+            workers,
+            state,
+            bridge_task: None,
+        })
+    }
+
+    /// boot itself - is a short-lived routine, which runs to completion and initiates background work
+    pub(crate) async fn boot(
+        mut shutdown_rx: broadcast::Receiver<()>,
+        mut receiver: mpsc::Receiver<QueuedJob>,
+    ) -> Result<WorkerPool, WorkerPoolErr> {
+        let mut pool = WorkerPool::new()?;
+
+        // Bridge task
+        pool.bridge_task = Some(tokio::spawn({
+            let state = pool.state.clone();
+
+            async move {
+                // Keep forwarding jobs until shutdown
+                loop {
+                    tokio::select! {
+                        maybe_job = receiver.recv() => {
+                            match maybe_job {
+                                Some(job) => {
+                                    state.queue.lock().unwrap().push_back(job);
+                                    state.job_available.notify_one();
+                                }
+                                None => {
+                                    state.begin_shutdown();
+                                    break;
+                                }
+                            }
+                        }
+                        _ = shutdown_rx.recv() => {
+                            state.begin_shutdown();
+                            break;
+                        }
+                    }
+                }
+            }
+        }));
+
+        Ok(pool)
+    }
+
+    pub(crate) async fn shutdown(self) {
+        let WorkerPool {
+            workers,
+            state,
+            mut bridge_task,
+        } = self;
+
+        if let Some(bridge_task) = bridge_task.take() {
+            let _ = bridge_task.await;
+        }
+        state.begin_shutdown();
+
+        let _ = tokio::task::spawn_blocking(move || {
+            for worker in workers {
+                let _ = worker.join();
+            }
+        })
+        .await;
     }
 }
 

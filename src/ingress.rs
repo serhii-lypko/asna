@@ -16,15 +16,16 @@ pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
     // Both channels are used for lifecycle signals, not data queue.
     // It's a lifecycle orchestration across a graph of long-lived concurrent components.
     // So basically, shutdown signalling between parties happens via implicit drop semantics,
-    // when droping one part of the channel signals to another.
+    // when droping one part of the channel signals to another. So kind of indirection.
     let (notify_shutdown, _) = broadcast::channel(1);
     let (shutdown_complete_tx, mut shutdown_complete_rx) = mpsc::channel(1);
 
     let (bounded_queue_sender, bounded_queue_receiver) = mpsc::channel(BOUNDED_QUEUE_LIMIT);
 
-    // TODO -> handle result
-    // Spawning thread pool
-    let worker_pool = WorkerPool::boot(notify_shutdown.subscribe(), bounded_queue_receiver).await;
+    // FIXME -> handle result instead of unwrap
+    let worker_pool = WorkerPool::boot(notify_shutdown.subscribe(), bounded_queue_receiver)
+        .await
+        .unwrap();
 
     let connection_limit = Arc::new(Semaphore::new(MAX_CONNECTIONS));
 
@@ -66,10 +67,10 @@ pub async fn run(tcp_listener: TcpListener, shutdown: impl Future) {
     // completes not only when a message is sent, but also when the channel is closed.
     drop(notify_shutdown);
 
+    worker_pool.shutdown().await;
+
     // Drop final `Sender` so the `Receiver` below can complete.
     drop(shutdown_complete_tx);
-
-    // TODO -> wait for worker_pool done
 
     // Waiting for all shutdown completion.
     let _ = shutdown_complete_rx.recv().await;
@@ -171,25 +172,22 @@ impl ConnectionHandler {
                 }
             };
 
-            let (job_result_sender, job_result_receiver) = oneshot::channel();
-
             match message {
                 crate::message::Message::Ping => {}
                 crate::message::Message::Pong => {}
                 crate::message::Message::SubmitJob(submit_job) => {
+                    let (job_result_sender, job_result_receiver) = oneshot::channel();
+
                     self.bounded_queue_sender
                         .send(QueuedJob::from_submit_job(submit_job, job_result_sender))
                         .await?;
+
+                    let result_job = job_result_receiver.await?;
+
+                    // TODO -> write back ResultJob to the connection
                 }
-
-                // Client should not send ResultJob
                 crate::message::Message::ResultJob(_) => unreachable!(),
-            };
-
-            // let result_job = job_result_receiver.await?;
-            // dbg!(result_job);
-
-            // TODO -> write back ResultJob to the connection
+            }
         }
     }
 }
