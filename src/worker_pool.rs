@@ -8,6 +8,8 @@ use crate::message::{ResultJob, SubmitJob};
 // TODO -> shutdown semantics: stop accepting new jobs, decide whether queued jobs are
 // drained or canceled, and wait for active workers to finish up to some policy.
 
+// FIXME -> problem: a window between two operations where a race condition can occur.
+
 static WORKER_COUNT: usize = 4;
 // static WORKER_COUNT: usize = 1;
 
