@@ -31,6 +31,8 @@ struct SharedState {
 
     // The condvar lets threads sleep until someone will trigger condition re-check.
     // Notifications are hints to wake up and inspect the condition again. It is like one-shot a wakeup event.
+    //
+    // The condvar is the coordination layer on top of the Mutex it holds.
     job_available: Condvar,
 }
 
@@ -95,6 +97,7 @@ impl WorkerPool {
                             return;
                         }
 
+                        // Atomically unlock the mutex specified and block the current thread.
                         queue = state.job_available.wait(queue).unwrap();
                     };
 
@@ -136,6 +139,8 @@ impl WorkerPool {
                             match maybe_job {
                                 Some(job) => {
                                     state.queue.lock().unwrap().push_back(job);
+
+                                    // Wakes up the locked thread.
                                     state.job_available.notify_one();
                                 }
                                 None => {
